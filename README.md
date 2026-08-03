@@ -4,7 +4,7 @@
   <img src="deepswapllm.png" alt="DeepswapLLM" width="400">
 </p>
 
-<h3 align="center">Run 36B-parameter models on a single RTX 3090.<br>3x faster than AirLLM. Zero disk I/O.</h3>
+<h3 align="center">Run 2.8T-parameter models on a single RTX 3090.<br>3x faster than AirLLM. Zero disk I/O.</h3>
 
 <p align="center">
   <a href="#benchmarks">Benchmarks</a> &bull;
@@ -65,6 +65,35 @@ Same model, quantized to Q8_0 (36GB) and Q4_K_M (21GB). DeepswapLLM pre-dequanti
 | **vs AirLLM** | 3.06x | **3.20x** | 3.02x | 1x |
 
 Q8_0 is actually the fastest configuration — lower swap latency than bf16 with near-identical output quality.
+
+### 2.8T Model — Kimi K3 (MXFP4 Quantized)
+
+Model: `Kimi-K3` (2.8T parameters, 93 layers, 896 experts/layer, MXFP4 compressed-tensors) — **116x larger than VRAM.**
+
+| | DeepswapLLM |
+|---|:---:|
+| **VRAM used** | **6.9GB** |
+| **Setup time** | **172s** |
+| **Layer swaps** | 93 |
+| **Avg swap** | 6.1s |
+| **Output** | Coherent |
+
+```
+============================================================
+  RESULTS (DeepswapLLM)
+============================================================
+  Model: Kimi-K3 (2.8T params, MXFP4)
+  GPU: RTX 3090 24GB
+  VRAM: 6.9GB peak
+  Setup: 172s (mapping 249k tensor groups)
+  Generation: 1127s for 1 token
+  Avg swap: 6064ms (per-expert disk load + MXFP4 decompress)
+  Disk loads: 93
+  Output: 'Hello,'
+============================================================
+```
+
+The 6s/layer reflects expert-level offloading: each MoE layer has 896 experts, and the router selects 8 per token. Each activated expert is loaded from mmap'd safetensors, decompressed from MXFP4 (uint8 packed + E8M0 scales), moved to GPU for compute, and freed — all within a single forward pass. The key achievement is fitting a 2.8T model in under 7GB VRAM.
 
 ### How is this possible?
 
@@ -184,6 +213,24 @@ output = model.generate(**inputs, max_new_tokens=100)
 
 Supports all GGUF quantization types: Q4_0, Q4_1, Q4_K_M, Q5_0, Q5_K, Q6_K, Q8_0, and more. Dequantization uses the `gguf` library's optimized numpy kernels.
 
+## Compressed-Tensors / Quantized Models
+
+Load models quantized with [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) (MXFP4, INT8, FP8). Packed weights stay on disk via mmap'd safetensors and are decompressed per layer swap — handles models of any size regardless of RAM.
+
+```python
+from deepswap import deepswap_quantized
+
+# One call — skeleton creation, weight mapping, and offloading are automatic
+model = deepswap_quantized("/path/to/quantized-model")
+
+# Use normally
+output = model.generate(**inputs, max_new_tokens=100)
+```
+
+For MoE models (like Kimi K3 with 896 experts per layer), expert weights are loaded on-demand: only the experts selected by the router are decompressed and moved to GPU during each forward pass.
+
+Supports MXFP4 (Microscaling FP4), INT8, and FP8 quantization formats with automatic format detection from `quantization_config`.
+
 ## SageAttention (Experimental)
 
 Optional INT8 attention quantization for faster prefill on Ampere+ GPUs:
@@ -220,6 +267,18 @@ Load a GGUF quantized model with layer-level offloading.
 | `model` | `nn.Module` | required | Architecture skeleton (weights replaced) |
 | `target_dtype` | `torch.dtype` | `float16` | Dtype after dequantization |
 
+### `deepswap_quantized(model_path, **kwargs) -> DeepSwapModel`
+
+Load a compressed-tensors quantized model with layer-level offloading.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `model_path` | `str` | required | Path to HF model with `quantization_config` |
+| `device` | `torch.device` | `cuda:0` | Target GPU |
+| `max_gpu_layers` | `int` | `1` | Max layers on GPU simultaneously |
+| `reserve_gb` | `float` | `2.0` | VRAM reserved for activations/KV cache |
+| `target_dtype` | `torch.dtype` | `float16` | Dtype for non-quantized parameters |
+
 ### `DeepSwapModel`
 
 The wrapped model supports all standard HuggingFace methods:
@@ -238,6 +297,7 @@ Any HuggingFace model with a standard transformer layer structure:
 | Layer Path | Models |
 |---|---|
 | `model.layers` | Llama, Qwen, Mistral, Gemma, DeepSeek, Phi, InternLM, Yi |
+| `language_model.model.layers` | Kimi K3, VLMs with language_model wrapper |
 | `transformer.h` | GPT-2, GPT-Neo, StarCoder |
 | `gpt_neox.layers` | GPT-NeoX, Pythia, RedPajama |
 | `transformer.layers` | Falcon, MPT |
@@ -254,8 +314,9 @@ safetensors
 
 Optional:
 ```
-sageattention    # For INT8 attention (sage_attention=True)
-gguf             # For GGUF model loading
+sageattention      # For INT8 attention (sage_attention=True)
+gguf               # For GGUF model loading
+compressed-tensors # For MXFP4/INT8/FP8 quantized models
 ```
 
 ## Installation
@@ -278,6 +339,8 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 | Pre-allocated GPU buffers | Yes | No | No | No |
 | CUDA stream prefetch | Yes | Partial | No | No |
 | GGUF quantized models | Yes | No (HF quants only) | Yes | No |
+| Compressed-tensors (MXFP4) | Yes | No | No | No |
+| MoE expert-level offload | Yes | No | No | No |
 | Sparse compression | Yes | No | No | No |
 | Auto-sizes to hardware | Yes | No | Manual | Manual |
 | HuggingFace compatible | Yes | Yes | No | Yes |

@@ -263,6 +263,32 @@ class GGUFLayer:
     total_bytes: int = 0
 
 
+@dataclass
+class QuantizedLayer:
+    """Layer with compressed-tensors packed weights — decompressed on GPU per-swap."""
+    packed_groups: Dict[str, Dict[str, torch.Tensor]]
+    plain_tensors: Dict[str, torch.Tensor]
+    compressor: Any
+    scheme: Any
+    total_packed_bytes: int = 0
+
+
+@dataclass
+class DiskQuantizedLayer:
+    """Layer with MXFP4/compressed-tensors packed weights on disk via mmap'd safetensors.
+
+    For large MoE models (e.g., K3 with 896 experts/layer) where packed data
+    per layer exceeds RAM. Tensors are loaded and decompressed per swap using
+    ShardPool mmap handles.
+    """
+    packed_map: Dict[str, Dict[str, Tuple[str, str]]]
+    plain_map: Dict[str, Tuple[str, str]]
+    quant_format: str
+    group_size: int = 32
+    target_dtype: torch.dtype = torch.float16
+    total_packed_bytes: int = 0
+
+
 class ShardPool:
     """Keeps safetensors shard files pre-mmap'd with warm page cache.
 
@@ -519,6 +545,213 @@ def _build_gguf_layer(
     )
 
 
+def _decompress_quantized_layer(
+    qlayer: QuantizedLayer,
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    """Decompress a QuantizedLayer's packed tensors on GPU."""
+    restored = {}
+
+    for prefix, packed in qlayer.packed_groups.items():
+        gpu_packed = {k: v.to(device) for k, v in packed.items()}
+        decompressed = qlayer.compressor.decompress(gpu_packed, qlayer.scheme)
+        if "weight" in decompressed:
+            restored[f"{prefix}.weight"] = decompressed["weight"]
+        else:
+            for k, v in decompressed.items():
+                restored[f"{prefix}.{k}"] = v
+        del gpu_packed
+
+    for name, tensor in qlayer.plain_tensors.items():
+        restored[name] = tensor.to(device)
+
+    return restored
+
+
+def _decompress_mxfp4_tensor(
+    packed: torch.Tensor,
+    scale: torch.Tensor,
+    group_size: int,
+    target_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Decompress a single MXFP4 packed tensor to target dtype on CPU."""
+    from compressed_tensors import unpack_fp4_from_uint8
+    from compressed_tensors.compressors.mx_utils import decompress_mx_scale
+
+    m, n_packed = packed.shape
+    n = n_packed * 2
+    unpacked = unpack_fp4_from_uint8(packed, m, n, dtype=torch.bfloat16)
+    scale_fp = decompress_mx_scale(scale)
+    scale_expanded = scale_fp.repeat_interleave(group_size, dim=1)[:, :n]
+    return (unpacked * scale_expanded).to(target_dtype)
+
+
+def _load_dq_tensors(
+    tensor_refs: Dict[str, Tuple[str, str]],
+    pool: Optional[ShardPool],
+    group_size: int,
+    target_dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """Load and decompress a single packed weight group from safetensors."""
+    packed_sp, packed_key = tensor_refs["weight_packed"]
+    scale_sp, scale_key = tensor_refs["weight_scale"]
+
+    if pool is not None:
+        packed = pool.get_tensor(packed_sp, packed_key)
+        scale = pool.get_tensor(scale_sp, scale_key)
+    else:
+        from safetensors import safe_open
+        with safe_open(packed_sp, framework="pt") as f:
+            packed = f.get_tensor(packed_key)
+        with safe_open(scale_sp, framework="pt") as f:
+            scale = f.get_tensor(scale_key)
+
+    weight = _decompress_mxfp4_tensor(packed, scale, group_size, target_dtype)
+    result = weight.to(device)
+    del packed, scale, weight
+    return result
+
+
+def _load_disk_quantized_layer(
+    dqlayer: DiskQuantizedLayer,
+    device: torch.device,
+    pool: Optional[ShardPool] = None,
+) -> Dict[str, torch.Tensor]:
+    """Load and decompress a DiskQuantizedLayer's tensors from mmap'd safetensors."""
+    restored = {}
+
+    for prefix, tensor_refs in dqlayer.packed_map.items():
+        restored[f"{prefix}.weight"] = _load_dq_tensors(
+            tensor_refs, pool, dqlayer.group_size, dqlayer.target_dtype, device,
+        )
+
+    for name, (shard_path, full_key) in dqlayer.plain_map.items():
+        if pool is not None:
+            tensor = pool.get_tensor(shard_path, full_key)
+        else:
+            from safetensors import safe_open
+            with safe_open(shard_path, framework="pt") as f:
+                tensor = f.get_tensor(full_key)
+        restored[name] = tensor.to(dtype=dqlayer.target_dtype, device=device)
+
+    return restored
+
+
+def _install_expert_offload_hooks(
+    module: nn.Module,
+    dqlayer: DiskQuantizedLayer,
+    device: torch.device,
+    pool: Optional[ShardPool] = None,
+) -> None:
+    """Install per-expert hooks for on-demand GPU loading of MoE expert weights.
+
+    For each expert submodule (e.g., experts.0, experts.1, ...):
+    - pre_forward: decompress packed weights from disk and move to GPU
+    - post_forward: move weights back to CPU and free GPU memory
+
+    Non-expert weights (attention, norms) are loaded to GPU once.
+    """
+    expert_prefix_map: Dict[str, Dict[str, Dict[str, Tuple[str, str]]]] = {}
+    for prefix, tensor_refs in dqlayer.packed_map.items():
+        parts = prefix.split(".")
+        expert_key = None
+        for j, part in enumerate(parts):
+            if part == "experts" and j + 1 < len(parts):
+                expert_key = ".".join(parts[:j+2])
+                break
+        if expert_key:
+            expert_prefix_map.setdefault(expert_key, {})[prefix] = tensor_refs
+
+    non_expert_packed = {
+        p: r for p, r in dqlayer.packed_map.items()
+        if not any(p.startswith(ek) for ek in expert_prefix_map)
+    }
+    for prefix, tensor_refs in non_expert_packed.items():
+        weight = _load_dq_tensors(
+            tensor_refs, pool, dqlayer.group_size, dqlayer.target_dtype, device,
+        )
+        parts = (prefix + ".weight").split(".")
+        target = module
+        for p in parts[:-1]:
+            target = getattr(target, p)
+        attr = getattr(target, parts[-1])
+        if isinstance(attr, nn.Parameter):
+            attr.data = weight
+        else:
+            setattr(target, parts[-1], weight)
+
+    for name, (shard_path, full_key) in dqlayer.plain_map.items():
+        if pool is not None:
+            tensor = pool.get_tensor(shard_path, full_key)
+        else:
+            from safetensors import safe_open
+            with safe_open(shard_path, framework="pt") as f:
+                tensor = f.get_tensor(full_key)
+        tensor = tensor.to(dtype=dqlayer.target_dtype, device=device)
+        parts = name.split(".")
+        target = module
+        for p in parts[:-1]:
+            target = getattr(target, p)
+        attr = getattr(target, parts[-1])
+        if isinstance(attr, nn.Parameter):
+            attr.data = tensor
+        else:
+            setattr(target, parts[-1], tensor)
+
+    for expert_key, packed_refs in expert_prefix_map.items():
+        parts = expert_key.split(".")
+        expert_mod = module
+        for p in parts:
+            expert_mod = getattr(expert_mod, p)
+
+        expert_mod._dq_packed_refs = packed_refs
+        expert_mod._dq_pool = pool
+        expert_mod._dq_group_size = dqlayer.group_size
+        expert_mod._dq_target_dtype = dqlayer.target_dtype
+        expert_mod._dq_device = device
+
+        def make_pre_hook(em, ek):
+            def hook(m, args):
+                for prefix, tensor_refs in em._dq_packed_refs.items():
+                    rel = prefix[len(ek) + 1:] if prefix.startswith(ek + ".") else prefix
+                    weight = _load_dq_tensors(
+                        tensor_refs, em._dq_pool,
+                        em._dq_group_size, em._dq_target_dtype, em._dq_device,
+                    )
+                    param_name = rel + ".weight"
+                    p = param_name.split(".")
+                    target = m
+                    for pp in p[:-1]:
+                        target = getattr(target, pp)
+                    attr = getattr(target, p[-1])
+                    if isinstance(attr, nn.Parameter):
+                        attr.data = weight
+                    else:
+                        setattr(target, p[-1], weight)
+            return hook
+
+        def make_post_hook(em, ek):
+            def hook(m, args, output):
+                for prefix in em._dq_packed_refs:
+                    rel = prefix[len(ek) + 1:] if prefix.startswith(ek + ".") else prefix
+                    param_name = rel + ".weight"
+                    p = param_name.split(".")
+                    target = m
+                    for pp in p[:-1]:
+                        target = getattr(target, pp)
+                    attr = getattr(target, p[-1])
+                    if isinstance(attr, nn.Parameter):
+                        attr.data = torch.empty(0, dtype=em._dq_target_dtype)
+                    else:
+                        setattr(target, p[-1], torch.empty(0, dtype=em._dq_target_dtype))
+                return output
+            return hook
+
+        expert_mod.register_forward_pre_hook(make_pre_hook(expert_mod, expert_key))
+        expert_mod.register_forward_hook(make_post_hook(expert_mod, expert_key))
+
+
 def _estimate_layer_bytes(module: nn.Module) -> int:
     """Estimate GPU memory needed for a single layer."""
     total = 0
@@ -743,6 +976,8 @@ class LayerSwapManager:
         self.layer_store: Dict[str, StoredLayer] = {}
         self.disk_store: Dict[str, DiskLayer] = {}
         self.gguf_store: Dict[str, GGUFLayer] = {}
+        self.quantized_store: Dict[str, QuantizedLayer] = {}
+        self.disk_quantized_store: Dict[str, DiskQuantizedLayer] = {}
         self._gguf_index: Optional[Dict[str, Any]] = None
         self._gguf_dtype: torch.dtype = torch.float16
         self.gpu_resident: OrderedDict[str, bool] = OrderedDict()
@@ -785,6 +1020,20 @@ class LayerSwapManager:
         self.gguf_store[layer_name] = glayer
         self._modules[layer_name] = module
 
+    def store_quantized_layer(
+        self, layer_name: str, module: nn.Module, qlayer: QuantizedLayer,
+    ) -> None:
+        """Register a layer with compressed-tensors packed weights."""
+        self.quantized_store[layer_name] = qlayer
+        self._modules[layer_name] = module
+
+    def store_disk_quantized_layer(
+        self, layer_name: str, module: nn.Module, dqlayer: DiskQuantizedLayer,
+    ) -> None:
+        """Register a layer with disk-backed MXFP4/compressed-tensors weights."""
+        self.disk_quantized_store[layer_name] = dqlayer
+        self._modules[layer_name] = module
+
     def _apply_params(self, module: nn.Module, restored: Dict[str, torch.Tensor]) -> None:
         """Apply restored parameters to a module."""
         for name, param_data in restored.items():
@@ -806,7 +1055,9 @@ class LayerSwapManager:
 
         if (layer_name not in self.layer_store
                 and layer_name not in self.disk_store
-                and layer_name not in self.gguf_store):
+                and layer_name not in self.gguf_store
+                and layer_name not in self.quantized_store
+                and layer_name not in self.disk_quantized_store):
             raise KeyError(f"Layer {layer_name} not in store")
 
         while len(self.gpu_resident) >= self.max_gpu_layers:
@@ -844,7 +1095,7 @@ class LayerSwapManager:
                 restored = _load_disk_layer(dlayer, self.device, pool=self.shard_pool)
             self._apply_params(module, restored)
             self._stats["disk_loads"] += 1
-        else:
+        elif layer_name in self.gguf_store:
             glayer = self.gguf_store[layer_name]
             if self.gpu_buffer_pool is not None:
                 cpu_tensors = _load_gguf_layer(
@@ -858,6 +1109,24 @@ class LayerSwapManager:
                     glayer, self._gguf_index, self.device, self._gguf_dtype,
                 )
             self._apply_params(module, restored)
+            self._stats["disk_loads"] += 1
+        elif layer_name in self.quantized_store:
+            qlayer = self.quantized_store[layer_name]
+            restored = _decompress_quantized_layer(qlayer, self.device)
+            self._apply_params(module, restored)
+            self._stats["ram_loads"] += 1
+        else:
+            dqlayer = self.disk_quantized_store[layer_name]
+            has_experts = any("experts" in p for p in dqlayer.packed_map)
+            if has_experts:
+                _install_expert_offload_hooks(
+                    module, dqlayer, self.device, pool=self.shard_pool,
+                )
+            else:
+                restored = _load_disk_quantized_layer(
+                    dqlayer, self.device, pool=self.shard_pool,
+                )
+                self._apply_params(module, restored)
             self._stats["disk_loads"] += 1
 
         swap_ms = (time.perf_counter() - t0) * 1000
@@ -879,7 +1148,9 @@ class LayerSwapManager:
             return
         if (layer_name not in self.layer_store
                 and layer_name not in self.disk_store
-                and layer_name not in self.gguf_store):
+                and layer_name not in self.gguf_store
+                and layer_name not in self.quantized_store
+                and layer_name not in self.disk_quantized_store):
             return
 
         # Buffer pool + CUDA stream path: async copy into pre-allocated buffer
@@ -935,11 +1206,13 @@ class LayerSwapManager:
                         self.disk_store[layer_name], self.device,
                         pool=self.shard_pool,
                     )
-                else:
+                elif layer_name in self.gguf_store:
                     restored = _load_gguf_layer(
                         self.gguf_store[layer_name], self._gguf_index,
                         self.device, self._gguf_dtype,
                     )
+                else:
+                    return
                 with self._prefetch_lock:
                     if layer_name in self.gpu_resident:
                         del restored
@@ -976,10 +1249,14 @@ class LayerSwapManager:
         n_ram = len(self.layer_store)
         n_disk = len(self.disk_store)
         n_gguf = len(self.gguf_store)
-        n_total = n_ram + n_disk + n_gguf
+        n_quant = len(self.quantized_store)
+        n_dquant = len(self.disk_quantized_store)
+        n_total = n_ram + n_disk + n_gguf + n_quant + n_dquant
         n_resident = len(self.gpu_resident)
         total_ram_bytes = sum(c.total_original for c in self.layer_store.values())
         total_disk_bytes = sum(d.total_bytes for d in self.disk_store.values())
+        total_quant_bytes = sum(q.total_packed_bytes for q in self.quantized_store.values())
+        total_dquant_bytes = sum(q.total_packed_bytes for q in self.disk_quantized_store.values())
         parts = [
             f"DeepSwap: {n_resident}/{n_total} on GPU",
             f"{n_ram} in RAM ({total_ram_bytes / 1e9:.1f}GB)",
@@ -988,6 +1265,10 @@ class LayerSwapManager:
             parts.append(f"{n_disk} on disk ({total_disk_bytes / 1e9:.1f}GB)")
         if n_gguf > 0:
             parts.append(f"{n_gguf} GGUF layers")
+        if n_quant > 0:
+            parts.append(f"{n_quant} quantized ({total_quant_bytes / 1e9:.1f}GB packed)")
+        if n_dquant > 0:
+            parts.append(f"{n_dquant} disk-quantized ({total_dquant_bytes / 1e9:.1f}GB packed)")
         parts.append(f"{self._stats['swaps']} swaps")
         return ", ".join(parts)
 
@@ -997,7 +1278,8 @@ class LayerSwapManager:
 # ---------------------------------------------------------------------------
 
 _LAYER_ATTRS = (
-    "model.layers", "transformer.h", "gpt_neox.layers",
+    "model.layers", "language_model.model.layers",
+    "transformer.h", "gpt_neox.layers",
     "transformer.layers", "encoder.layer",
 )
 
@@ -1493,6 +1775,201 @@ def deepswap_gguf(
                 logger.debug("GGUF global: skipped %s (not found in model)", hf_name)
 
     del reader, tensor_index
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return DeepSwapModel(model, manager, layers)
+
+
+def deepswap_quantized(
+    model_path: str,
+    device: Optional[torch.device] = None,
+    max_gpu_layers: Optional[int] = None,
+    reserve_gb: float = 2.0,
+    target_dtype: torch.dtype = torch.float16,
+    sage_attention: bool = False,
+) -> DeepSwapModel:
+    """Wrap a HuggingFace pre-quantized model for layer-level offloading.
+
+    Supports models quantized with compressed-tensors (MXFP4, INT8, FP8).
+    Packed weights stay on disk via mmap'd safetensors and are decompressed
+    per layer swap — handles models of any size regardless of RAM.
+
+    Parameters
+    ----------
+    model_path : str
+        Path to a HuggingFace model with quantization_config in its config.
+    device : torch.device, optional
+        Target GPU device. Defaults to cuda:0.
+    max_gpu_layers : int, optional
+        Max layers to keep on GPU simultaneously.
+    reserve_gb : float
+        VRAM to reserve for activations/KV cache (default 2GB).
+    target_dtype : torch.dtype
+        Dtype for non-quantized parameters (default float16).
+    sage_attention : bool
+        Enable SageAttention (INT8 QK + FP16 PV).
+
+    Returns
+    -------
+    DeepSwapModel
+        Wrapped model with quantized layer swapping.
+    """
+    from transformers import AutoConfig
+    from safetensors import safe_open
+
+    if sage_attention:
+        enable_sage_attention()
+
+    if device is None:
+        device = torch.device("cuda:0")
+
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        quant_config = getattr(
+            getattr(config, "text_config", None), "quantization_config", None,
+        )
+    if quant_config is None:
+        raise ValueError(f"No quantization_config found in {model_path}")
+
+    quant_format = quant_config.get("format", quant_config.get("quant_method", ""))
+    fmt_str = getattr(quant_format, "value", str(quant_format))
+    group_size = 32
+    cg = quant_config.get("config_groups", {})
+    for g in cg.values():
+        w = g.get("weights", {})
+        if "group_size" in w:
+            group_size = w["group_size"]
+            break
+
+    logger.info("Quantized model: %s, format: %s, group_size: %d",
+                model_path, fmt_str, group_size)
+
+    model = _make_empty_model(model_path, target_dtype)
+
+    layers, layer_attr = _find_transformer_layers(model)
+    n_layers = len(layers)
+
+    max_gpu_layers = min(max_gpu_layers or 1, n_layers)
+
+    safetensors_map = _build_safetensors_map(model_path)
+
+    shard_pool = ShardPool()
+    all_shards = set(safetensors_map.values())
+    for sp in all_shards:
+        shard_pool.open_shard(sp)
+    shard_pool.warm(all_shards)
+
+    manager = LayerSwapManager(
+        device=device,
+        max_gpu_layers=max_gpu_layers,
+        pin_memory=False,
+        shard_pool=shard_pool,
+    )
+
+    layer_prefixes = []
+    import re as _re
+    layer_idx_pattern = _re.compile(r'\.layers\.(\d+)\.')
+    idx_to_prefix: Dict[int, str] = {}
+    idx_to_keys: Dict[int, List[str]] = {}
+    for fk in safetensors_map:
+        m = layer_idx_pattern.search(fk)
+        if m:
+            idx = int(m.group(1))
+            if idx not in idx_to_prefix:
+                idx_to_prefix[idx] = fk[:m.end() - 1]
+            idx_to_keys.setdefault(idx, []).append(fk)
+    for i in range(n_layers):
+        layer_prefixes.append(idx_to_prefix.get(i))
+
+    mapped_count = 0
+    for i, (layer_name, module) in enumerate(layers):
+        prefix = layer_prefixes[i]
+        if not prefix:
+            logger.warning("Quantized: no safetensors prefix for layer %d", i)
+            continue
+
+        all_full_keys = idx_to_keys.get(i, [])
+
+        packed_prefixes = set()
+        for fk in all_full_keys:
+            if fk.endswith(".weight_packed"):
+                rel = fk[len(prefix) + 1:]
+                packed_prefixes.add(rel[:-len(".weight_packed")])
+
+        packed_map: Dict[str, Dict[str, Tuple[str, str]]] = {}
+        plain_map: Dict[str, Tuple[str, str]] = {}
+        n_packed_tensors = 0
+
+        for pp in packed_prefixes:
+            refs: Dict[str, Tuple[str, str]] = {}
+            for fk in all_full_keys:
+                rel = fk[len(prefix) + 1:]
+                if rel.startswith(pp + ".weight"):
+                    shard_path = safetensors_map[fk]
+                    suffix = rel[len(pp) + 1:]
+                    refs[suffix] = (shard_path, fk)
+                    n_packed_tensors += 1
+            if refs:
+                packed_map[pp] = refs
+
+        for fk in all_full_keys:
+            rel = fk[len(prefix) + 1:]
+            is_packed = any(rel.startswith(pp + ".weight") for pp in packed_prefixes)
+            if not is_packed:
+                shard_path = safetensors_map[fk]
+                plain_map[rel] = (shard_path, fk)
+
+        if not packed_map and not plain_map:
+            logger.warning("Quantized: no tensors for layer %d", i)
+            continue
+
+        dqlayer = DiskQuantizedLayer(
+            packed_map=packed_map,
+            plain_map=plain_map,
+            quant_format=fmt_str,
+            group_size=group_size,
+            target_dtype=target_dtype,
+            total_packed_bytes=n_packed_tensors,
+        )
+        manager.store_disk_quantized_layer(layer_name, module, dqlayer)
+        mapped_count += len(packed_map) + len(plain_map)
+
+        for param in module.parameters():
+            param.data = torch.empty(0, dtype=param.dtype)
+
+        if (i + 1) % 10 == 0 or i == n_layers - 1:
+            logger.info("Quantized: mapped %d/%d layers (%d tensor groups)",
+                        i + 1, n_layers, mapped_count)
+
+    logger.info("Quantized: %d tensor groups across %d layers", mapped_count, n_layers)
+
+    layer_prefix_set = {p for p in layer_prefixes if p}
+    for fk in safetensors_map:
+        if any(fk.startswith(p + ".") for p in layer_prefix_set):
+            continue
+        if fk.endswith("_packed") or fk.endswith("_scale"):
+            continue
+        try:
+            shard_path = safetensors_map[fk]
+            tensor = shard_pool.get_tensor(shard_path, fk)
+            if tensor.is_floating_point() and tensor.element_size() > 1:
+                tensor = tensor.to(dtype=target_dtype)
+            tensor = tensor.to(device=device)
+
+            parts = fk.split(".")
+            target_mod = model
+            for p in parts[:-1]:
+                target_mod = getattr(target_mod, p)
+            attr = getattr(target_mod, parts[-1])
+            if isinstance(attr, nn.Parameter):
+                attr.data = tensor
+            else:
+                setattr(target_mod, parts[-1], tensor)
+        except (AttributeError, KeyError):
+            pass
+
     gc.collect()
     torch.cuda.empty_cache()
 
