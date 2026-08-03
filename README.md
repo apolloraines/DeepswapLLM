@@ -83,9 +83,9 @@ This is a **capability win, not a tok/s speed win**: the point is that a 2.8T mo
 | **Throughput** | 1127 s/token (~0.0009 tok/s) | not published |
 | **Output** | Coherent | — |
 
-AirLLM reports only peak VRAM (3.72GB) for K3, measured on an RTX 6000 Ada — a 48GB workstation card with higher memory bandwidth than a 3090. It does not publish setup or per-token timing. The figures above are the full run on a 24GB RTX 3090: setup, per-token latency, and peak VRAM.
+AirLLM reports only peak VRAM (3.72GB) for K3, measured on an RTX 6000 Ada. It does not publish setup or per-token timing. The figures above are the full run on a single RTX 3090: setup, per-token latency, and peak VRAM.
 
-The workload is bound by memory bandwidth and per-expert disk streaming, so the RTX 6000 Ada's faster memory would improve both VRAM headroom and throughput relative to a 3090.
+The hardware doesn't explain the gap in what was reported. The two cards have comparable memory bandwidth (RTX 3090 ~936 GB/s, RTX 6000 Ada ~960 GB/s), and VRAM capacity isn't the constraint either — K3 needs under 7GB, far below either card. More importantly, this workload is bound by per-expert disk streaming and MXFP4 decompression, not GPU throughput, so the choice of card has little effect on speed.
 
 The VRAM difference (6.9GB vs 3.72GB) reflects a design choice: DeepswapLLM pre-allocates GPU staging buffers for zero-alloc double-buffering — the mechanism behind its 3x speedup on smaller models — and reserves 4GB of headroom in this run.
 
