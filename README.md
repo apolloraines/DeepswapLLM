@@ -70,13 +70,21 @@ Q8_0 is actually the fastest configuration — lower swap latency than bf16 with
 
 Model: `Kimi-K3` (2.8T parameters, 93 layers, 896 experts/layer, MXFP4 compressed-tensors) — **116x larger than VRAM.**
 
-| | DeepswapLLM |
-|---|:---:|
-| **VRAM used** | **6.9GB** |
-| **Setup time** | **172s** |
-| **Layer swaps** | 93 |
-| **Avg swap** | 6.1s |
-| **Output** | Coherent |
+| | DeepswapLLM | AirLLM |
+|---|:---:|:---:|
+| **Runs at all** | **Yes** | **No** |
+| **VRAM used** | **6.9GB** | OOM |
+| **Setup time** | **172s** | — |
+| **Layer swaps** | 93 | — |
+| **Avg swap** | 6.1s | — |
+| **Output** | Coherent | — |
+
+**AirLLM cannot run this model** — for two independent reasons:
+
+1. **No MXFP4 support.** AirLLM reads standard HF weights or applies its own load-time bitsandbytes quantization. It has no decompressor for compressed-tensors `mxfp4-pack-quantized` (uint8-packed 4-bit weights + E8M0 scales), so it fails before inference starts.
+2. **One K3 layer is larger than the entire GPU.** AirLLM's design loads a *whole transformer layer* to GPU at once. A single K3 MoE layer holds 896 experts = 59.2B parameters = **118GB in fp16** (29.6GB even at 4-bit). That exceeds a 24GB 3090 by ~5x, so AirLLM OOMs on the first MoE layer.
+
+DeepswapLLM goes a tier deeper than "layer": the router activates only 16 of the 896 experts per token, and each is freed right after its forward pass — so the resident expert weight is a fraction of the full 118GB layer. **This is the entire reason a 2.8T model fits in 6.9GB.**
 
 ```
 ============================================================
@@ -93,7 +101,7 @@ Model: `Kimi-K3` (2.8T parameters, 93 layers, 896 experts/layer, MXFP4 compresse
 ============================================================
 ```
 
-The 6s/layer reflects expert-level offloading: each MoE layer has 896 experts, and the router selects 8 per token. Each activated expert is loaded from mmap'd safetensors, decompressed from MXFP4 (uint8 packed + E8M0 scales), moved to GPU for compute, and freed — all within a single forward pass. The key achievement is fitting a 2.8T model in under 7GB VRAM.
+The 6s/layer reflects expert-level offloading: each MoE layer has 896 experts, and the router selects 16 per token. Each activated expert is loaded from mmap'd safetensors, decompressed from MXFP4 (uint8 packed + E8M0 scales), moved to GPU for compute, and freed — all within a single forward pass. The key achievement is fitting a 2.8T model in under 7GB VRAM.
 
 ### How is this possible?
 
