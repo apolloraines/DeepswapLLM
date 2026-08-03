@@ -70,6 +70,8 @@ Q8_0 is actually the fastest configuration — lower swap latency than bf16 with
 
 Model: `Kimi-K3` (2.8T parameters, 93 layers, 896 experts/layer, MXFP4 compressed-tensors) — **116x larger than VRAM.**
 
+This is a **capability win, not a tok/s speed win**: the point is that a 2.8T model runs *at all* on a 24GB consumer card. The 6s/layer is bounded by per-expert disk reads and MXFP4 decompression, not raw compute — so newer, higher-bandwidth hardware (e.g. RTX 6000 Ada / Blackwell, with far more VRAM and PCIe/memory bandwidth) would be substantially faster.
+
 | | DeepswapLLM | AirLLM |
 |---|:---:|:---:|
 | **Runs at all** | **Yes** | **No** |
