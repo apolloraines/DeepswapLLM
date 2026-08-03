@@ -13,3 +13,5 @@ build/
 *.bin
 .pytest_cache/
 *.log
+# Local-only working notes — never pushed
+*.local.md
