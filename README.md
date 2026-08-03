@@ -272,4 +272,4 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 
 ## License
 
-Copyright (c) 2025 Apollo Raines / Robert Rice. All Rights Reserved.
+Copyright (c) 2025 Apollo Raines. All Rights Reserved.

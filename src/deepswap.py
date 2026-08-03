@@ -1,6 +1,6 @@
 """
 DeepswapLLM — Run oversized LLMs on undersized GPUs.
-Copyright (c) 2025 Apollo Raines / Robert Rice. All Rights Reserved.
+Copyright (c) 2025 Apollo Raines. All Rights Reserved.
 PROPRIETARY AND CONFIDENTIAL.
 
 Tiered layer storage with intelligent GPU swapping.

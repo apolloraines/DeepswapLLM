@@ -1,6 +1,6 @@
 """
 DeepswapLLM Compression Engine
-Copyright (c) 2025 Apollo Raines / Robert Rice. All Rights Reserved.
+Copyright (c) 2025 Apollo Raines. All Rights Reserved.
 PROPRIETARY AND CONFIDENTIAL.
 
 CPU-side sparse block compression and decompression.
