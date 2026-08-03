@@ -80,8 +80,9 @@ This is a **capability win, not a tok/s speed win**: the point is that a 2.8T mo
 | **VRAM (generation)** | 6.9 GB | 3.72 GB |
 | **Init / setup** | **172 s** | 900 s |
 | **Throughput — measured** | 1127 s/token (7200rpm HDD) | 292 s/token |
-| **Throughput — NVMe** | **~100 s/token** (projected) | — |
-| **Output** | Coherent | — |
+| **Throughput — NVMe** | **~100 s/token** (projected)\* | — |
+
+\* No NVMe drive with enough free space to hold K3's re-split was available at the time of writing, so this figure is projected from sequential read speeds measured on this machine (HDD 245 MB/s vs NVMe 1806 MB/s), not from a live K3 run on NVMe. Output on the HDD run was coherent.
 
 **Init / setup:** DeepswapLLM readies ~5x faster (172 s vs 900 s).
 
