@@ -1,7 +1,7 @@
 """
 DeepswapLLM — Run oversized LLMs on undersized GPUs.
-Copyright (c) 2025 Apollo Raines. All Rights Reserved.
-PROPRIETARY AND CONFIDENTIAL.
+Copyright 2025 Apollo Raines
+Licensed under the Apache License, Version 2.0
 
 Tiered layer storage with intelligent GPU swapping.
 Layers live across three tiers:
@@ -467,21 +467,22 @@ def _load_gguf_layer(
     return result
 
 
-# GGUF tensor name patterns (HuggingFace param suffix -> GGUF suffix)
-_GGUF_PARAM_MAP = {
-    "input_layernorm.weight": "attn_norm.weight",
-    "self_attn.q_proj.weight": "attn_q.weight",
-    "self_attn.k_proj.weight": "attn_k.weight",
-    "self_attn.v_proj.weight": "attn_v.weight",
-    "self_attn.o_proj.weight": "attn_output.weight",
-    "post_attention_layernorm.weight": "ffn_norm.weight",
-    "mlp.gate_proj.weight": "ffn_gate.weight",
-    "mlp.up_proj.weight": "ffn_up.weight",
-    "mlp.down_proj.weight": "ffn_down.weight",
-    "self_attn.q_proj.bias": "attn_q.bias",
-    "self_attn.k_proj.bias": "attn_k.bias",
-    "self_attn.v_proj.bias": "attn_v.bias",
-    "self_attn.o_proj.bias": "attn_output.bias",
+# GGUF tensor name patterns (HuggingFace param suffix -> GGUF suffix candidates)
+# Some architectures use different GGUF names; list alternates in order of preference.
+_GGUF_PARAM_MAP: Dict[str, List[str]] = {
+    "input_layernorm.weight": ["attn_norm.weight"],
+    "self_attn.q_proj.weight": ["attn_q.weight"],
+    "self_attn.k_proj.weight": ["attn_k.weight"],
+    "self_attn.v_proj.weight": ["attn_v.weight"],
+    "self_attn.o_proj.weight": ["attn_output.weight"],
+    "post_attention_layernorm.weight": ["ffn_norm.weight", "post_attention_norm.weight"],
+    "mlp.gate_proj.weight": ["ffn_gate.weight"],
+    "mlp.up_proj.weight": ["ffn_up.weight"],
+    "mlp.down_proj.weight": ["ffn_down.weight"],
+    "self_attn.q_proj.bias": ["attn_q.bias"],
+    "self_attn.k_proj.bias": ["attn_k.bias"],
+    "self_attn.v_proj.bias": ["attn_v.bias"],
+    "self_attn.o_proj.bias": ["attn_output.bias"],
 }
 
 
@@ -496,14 +497,19 @@ def _build_gguf_layer(
     total_bytes = 0
 
     for param_name in param_names:
-        gguf_suffix = _GGUF_PARAM_MAP.get(param_name)
-        if gguf_suffix:
-            gguf_name = f"blk.{layer_idx}.{gguf_suffix}"
-        else:
+        candidates = _GGUF_PARAM_MAP.get(param_name)
+        matched = False
+        if candidates:
+            for suffix in candidates:
+                gguf_name = f"blk.{layer_idx}.{suffix}"
+                if gguf_name in tensor_names:
+                    tensor_map[param_name] = gguf_name
+                    matched = True
+                    break
+        if not matched:
             gguf_name = f"blk.{layer_idx}.{param_name}"
-
-        if gguf_name in tensor_names:
-            tensor_map[param_name] = gguf_name
+            if gguf_name in tensor_names:
+                tensor_map[param_name] = gguf_name
 
     return GGUFLayer(
         gguf_path=gguf_path,
@@ -1298,14 +1304,38 @@ def deepswap(
     return DeepSwapModel(model, manager, layers)
 
 
+def _make_empty_model(model_name_or_path: str, target_dtype: torch.dtype) -> nn.Module:
+    """Create an empty HF model skeleton without loading weights."""
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
+
+    try:
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_config(
+                config, torch_dtype=target_dtype, trust_remote_code=True,
+            )
+        model = model.to_empty(device="cpu")
+    except Exception:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path, torch_dtype=target_dtype,
+            device_map="cpu", low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
+
+    model.eval()
+    return model
+
+
 def deepswap_gguf(
     gguf_path: str,
-    model: nn.Module,
+    model: Any = None,
     device: Optional[torch.device] = None,
     max_gpu_layers: Optional[int] = None,
     reserve_gb: float = 2.0,
     target_dtype: torch.dtype = torch.float16,
     sage_attention: bool = False,
+    model_name: Optional[str] = None,
 ) -> DeepSwapModel:
     """Wrap a HuggingFace model with GGUF quantized weights.
 
@@ -1317,9 +1347,11 @@ def deepswap_gguf(
     ----------
     gguf_path : str
         Path to the GGUF model file.
-    model : nn.Module
-        A HuggingFace transformers model (loaded to CPU, used as
-        the architecture skeleton — its weights will be replaced).
+    model : nn.Module or str, optional
+        A HuggingFace transformers model (loaded to CPU) or a model
+        name/path string. If a string is provided (or model_name is
+        set), an empty skeleton is created automatically, avoiding
+        the RAM cost of loading full pretrained weights.
     device : torch.device, optional
         Target GPU device. Defaults to cuda:0.
     max_gpu_layers : int, optional
@@ -1330,6 +1362,9 @@ def deepswap_gguf(
         Dtype to dequantize into (default float16).
     sage_attention : bool
         Enable SageAttention (INT8 QK + FP16 PV).
+    model_name : str, optional
+        HF model name/path. Creates an empty skeleton. Alternative
+        to passing a pre-loaded model.
 
     Returns
     -------
@@ -1344,6 +1379,13 @@ def deepswap_gguf(
     if device is None:
         device = torch.device("cuda:0")
 
+    if isinstance(model, str):
+        model = _make_empty_model(model, target_dtype)
+    elif model is None and model_name is not None:
+        model = _make_empty_model(model_name, target_dtype)
+    elif model is None:
+        raise ValueError("Provide a model (nn.Module or str) or model_name")
+
     reader = GGUFReader(gguf_path)
     tensor_index = {t.name: t for t in reader.tensors}
     tensor_names = set(tensor_index.keys())
@@ -1357,6 +1399,17 @@ def deepswap_gguf(
         max_gpu_layers = _auto_max_layers(layers, device, reserve_gb, 0)
     max_gpu_layers = min(max_gpu_layers, n_layers)
 
+    layer_bytes = _estimate_layer_bytes(layers[0][1]) if layers else 0
+    elem_size = torch.finfo(target_dtype).bits // 8
+    gpu_buffer_pool = None
+    if layer_bytes > 0 and device.type == "cuda":
+        try:
+            gpu_buffer_pool = GPUBufferPool(layer_bytes, target_dtype, device)
+            logger.info("GGUF: GPUBufferPool allocated (%.1f MB x2)",
+                        layer_bytes / 1e6)
+        except Exception as e:
+            logger.warning("GGUF: GPUBufferPool failed: %s", e)
+
     manager = LayerSwapManager(
         device=device,
         max_gpu_layers=max_gpu_layers,
@@ -1364,35 +1417,63 @@ def deepswap_gguf(
     )
     manager._gguf_index = tensor_index
     manager._gguf_dtype = target_dtype
+    if gpu_buffer_pool is not None:
+        manager.gpu_buffer_pool = gpu_buffer_pool
+
+    from gguf.quants import dequantize as gguf_dequantize
+    import numpy as np
 
     mapped_count = 0
     for i, (layer_name, module) in enumerate(layers):
         param_names = list(module.state_dict().keys())
         glayer = _build_gguf_layer(i, gguf_path, tensor_names, param_names)
 
-        if glayer.tensor_map:
-            manager.store_gguf_layer(layer_name, module, glayer)
-            mapped_count += len(glayer.tensor_map)
-        else:
+        if not glayer.tensor_map:
             logger.warning("GGUF: no tensors mapped for layer %d", i)
+            for param in module.parameters():
+                param.data = torch.empty(0, dtype=param.dtype, device=device)
+            continue
+
+        mapped_count += len(glayer.tensor_map)
+
+        cpu_tensors = {}
+        for param_name, gguf_name in glayer.tensor_map.items():
+            t = tensor_index[gguf_name]
+            np_fp32 = gguf_dequantize(t.data, t.tensor_type)
+            logical_shape = tuple(reversed(t.shape.tolist()))
+            tensor = torch.from_numpy(
+                np_fp32.reshape(logical_shape).astype(
+                    np.float16 if target_dtype == torch.float16 else np.float32,
+                    copy=False,
+                )
+            ).contiguous()
+            cpu_tensors[param_name] = tensor
+
+        slayer = _store_state_dict(cpu_tensors, pin_memory=False)
+        manager.layer_store[layer_name] = slayer
+        manager._modules[layer_name] = module
 
         for param in module.parameters():
             param.data = torch.empty(0, dtype=param.dtype, device=device)
 
+        del cpu_tensors
+        if (i + 1) % 8 == 0:
+            logger.info("GGUF: pre-dequantized %d/%d layers (%.1f GB stored)",
+                        i + 1, n_layers, sum(
+                            s.total_stored for s in manager.layer_store.values()
+                        ) / 1e9)
+
     logger.info("GGUF: mapped %d tensors across %d layers", mapped_count, n_layers)
 
-    # Move non-layer params (embeddings, lm_head, norms) to GPU from GGUF
     _GGUF_GLOBAL_MAP = {
         "model.embed_tokens.weight": "token_embd.weight",
         "model.norm.weight": "output_norm.weight",
         "lm_head.weight": "output.weight",
     }
-    from gguf.quants import dequantize
-    import numpy as np
     for hf_name, gguf_name in _GGUF_GLOBAL_MAP.items():
         if gguf_name in tensor_index:
             t = tensor_index[gguf_name]
-            np_fp32 = dequantize(t.data, t.tensor_type)
+            np_fp32 = gguf_dequantize(t.data, t.tensor_type)
             logical_shape = tuple(reversed(t.shape.tolist()))
             tensor = torch.from_numpy(np_fp32.reshape(logical_shape).copy())
             tensor = tensor.to(dtype=target_dtype, device=device)
@@ -1411,6 +1492,7 @@ def deepswap_gguf(
             except AttributeError:
                 logger.debug("GGUF global: skipped %s (not found in model)", hf_name)
 
+    del reader, tensor_index
     gc.collect()
     torch.cuda.empty_cache()
 

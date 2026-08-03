@@ -53,6 +53,19 @@ Model: `seed-oss-36b-base` (36B parameters, 69GB in bf16) — **2.8x larger than
 ============================================================
 ```
 
+### 36B Model — GGUF Quantized
+
+Same model, quantized to Q8_0 (36GB) and Q4_K_M (21GB). DeepswapLLM pre-dequantizes all layers at setup, then uses the same zero-alloc swap engine. AirLLM has no GGUF support.
+
+| | bf16 | Q8_0 | Q4_K_M | AirLLM (bf16) |
+|---|:---:|:---:|:---:|:---:|
+| **Tokens/sec** | 0.1935 | **0.2029** | 0.1914 | 0.0633 |
+| **Avg swap** | 11.6ms | **1.3ms** | 1.4ms | ~500ms |
+| **GGUF size** | 69GB | 36GB | 21GB | — |
+| **vs AirLLM** | 3.06x | **3.20x** | 3.02x | 1x |
+
+Q8_0 is actually the fastest configuration — lower swap latency than bf16 with near-identical output quality.
+
 ### How is this possible?
 
 Every layer swap in AirLLM (and similar disk-based offloaders) does this:
@@ -264,7 +277,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 | Tiered storage (VRAM/RAM/disk) | Yes | Disk only | VRAM/RAM | VRAM/RAM |
 | Pre-allocated GPU buffers | Yes | No | No | No |
 | CUDA stream prefetch | Yes | Partial | No | No |
-| GGUF quantized models | Yes | No | Yes | No |
+| GGUF quantized models | Yes | No (HF quants only) | Yes | No |
 | Sparse compression | Yes | No | No | No |
 | Auto-sizes to hardware | Yes | No | Manual | Manual |
 | HuggingFace compatible | Yes | Yes | No | Yes |
@@ -272,4 +285,4 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 
 ## License
 
-Copyright (c) 2025 Apollo Raines. All Rights Reserved.
+Apache License 2.0. See [LICENSE](LICENSE) for details.

@@ -1,7 +1,7 @@
 """
 DeepswapLLM Compression Engine
-Copyright (c) 2025 Apollo Raines. All Rights Reserved.
-PROPRIETARY AND CONFIDENTIAL.
+Copyright 2025 Apollo Raines
+Licensed under the Apache License, Version 2.0
 
 CPU-side sparse block compression and decompression.
 Format is self-describing and portable.
