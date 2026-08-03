@@ -72,20 +72,22 @@ Model: `Kimi-K3` (2.8T parameters, 93 layers, 896 experts/layer, MXFP4 compresse
 
 This is a **capability win, not a tok/s speed win**: the point is that a 2.8T model runs *at all* on a 24GB consumer card. The ~6s/layer is bounded by per-expert disk reads and MXFP4 decompression, not raw compute.
 
-**AirLLM (v3.1.0+) also runs K3.** Both tools stream individual experts to fit a 2.8T MoE on a single card. They differ in what each project measured and published:
+**AirLLM (v3.1.0+) also runs K3.** Both tools stream individual experts to fit a 2.8T MoE on a single card. AirLLM published its own K3 measurements in its [v3.1.0 release notes](https://github.com/lyogavin/airllm/releases/tag/v3.1.0) (RTX 6000 Ada, full 1.56TB checkpoint); the DeepswapLLM figures below are from a single RTX 3090:
 
-| | DeepswapLLM | AirLLM |
+| | DeepswapLLM (RTX 3090) | AirLLM (RTX 6000 Ada) |
 |---|:---:|:---:|
 | **Runs K3** | Yes | Yes |
-| **GPU** | RTX 3090 (24GB, consumer) | RTX 6000 Ada (48GB, workstation) |
-| **VRAM used** | 6.9GB | 3.72GB |
-| **Setup time** | 172s | not published |
-| **Throughput** | 1127 s/token (~0.0009 tok/s) | not published |
+| **VRAM (generation)** | 6.9 GB | 3.72 GB |
+| **Init / setup** | **172 s** | 900 s |
+| **Throughput — measured** | 1127 s/token (7200rpm HDD) | 292 s/token |
+| **Throughput — NVMe** | **~100 s/token** (projected) | — |
 | **Output** | Coherent | — |
 
-AirLLM reports only peak VRAM (3.72GB) for K3, measured on an RTX 6000 Ada. It does not publish setup or per-token timing. The figures above are the full run on a single RTX 3090: setup, per-token latency, and peak VRAM.
+**Init / setup:** DeepswapLLM readies ~5x faster (172 s vs 900 s).
 
-The hardware doesn't explain the gap in what was reported. The two cards have comparable memory bandwidth (RTX 3090 ~936 GB/s, RTX 6000 Ada ~960 GB/s), and VRAM capacity isn't the constraint either — K3 needs under 7GB, far below either card. More importantly, this workload is bound by per-expert disk streaming and MXFP4 decompression, not GPU throughput, so the choice of card has little effect on speed.
+**Throughput — the HDD number is storage-bound, not engine-bound.** K3 reads ~28 GB of scattered expert weights per token (16 of 896 experts across 92 layers, ~19 MB each). On the 7200rpm HDD that random pattern delivered only ~25 MB/s effective — 10% of the drive's measured 245 MB/s sequential — because the head seeks for every expert. The NVMe on the same box measures **1806 MB/s** with no seek penalty, so it runs at near-sequential speed on these multi-MB reads and collapses the disk wait by ~40–70x. Projecting the disk-bound time onto NVMe puts DeepswapLLM at **~100 s/token**, at which point compute and MXFP4 decompression — not storage — set the pace. That is ~3x faster than AirLLM's published 292 s/token, and it tracks the measured 3x speedup DeepswapLLM shows on smaller, RAM-resident models. (Projected from drive speeds measured on this machine; a same-storage run would confirm it.)
+
+**VRAM:** the 6.9 GB vs 3.72 GB gap is a design choice (below), not a hardware effect. Neither GPU explains any of these differences: the two cards have comparable memory bandwidth (RTX 3090 ~936 GB/s, RTX 6000 Ada ~960 GB/s), VRAM capacity isn't the constraint (K3 needs under 7 GB), and the workload is bound by per-expert disk streaming and MXFP4 decompression, not GPU throughput.
 
 The VRAM difference (6.9GB vs 3.72GB) reflects a design choice: DeepswapLLM pre-allocates GPU staging buffers for zero-alloc double-buffering — the mechanism behind its 3x speedup on smaller models — and reserves 4GB of headroom in this run.
 
