@@ -70,23 +70,28 @@ Q8_0 is actually the fastest configuration — lower swap latency than bf16 with
 
 Model: `Kimi-K3` (2.8T parameters, 93 layers, 896 experts/layer, MXFP4 compressed-tensors) — **116x larger than VRAM.**
 
-This is a **capability win, not a tok/s speed win**: the point is that a 2.8T model runs *at all* on a 24GB consumer card. The 6s/layer is bounded by per-expert disk reads and MXFP4 decompression, not raw compute — so newer, higher-bandwidth hardware (e.g. RTX 6000 Ada / Blackwell, with far more VRAM and PCIe/memory bandwidth) would be substantially faster.
+This is a **capability win, not a tok/s speed win**: the point is that a 2.8T model runs *at all* on a 24GB consumer card. The ~6s/layer is bounded by per-expert disk reads and MXFP4 decompression, not raw compute.
+
+**AirLLM (v3.1.0+) also runs K3.** Both tools stream individual experts to fit a 2.8T MoE on a single card. They differ in what each project measured and published:
 
 | | DeepswapLLM | AirLLM |
 |---|:---:|:---:|
-| **Runs at all** | **Yes** | **No** |
-| **VRAM used** | **6.9GB** | OOM |
-| **Setup time** | **172s** | — |
-| **Layer swaps** | 93 | — |
-| **Avg swap** | 6.1s | — |
+| **Runs K3** | Yes | Yes |
+| **GPU** | RTX 3090 (24GB, consumer) | RTX 6000 Ada (48GB, workstation) |
+| **VRAM used** | 6.9GB | 3.72GB |
+| **Setup time** | 172s | not published |
+| **Throughput** | 1127 s/token (~0.0009 tok/s) | not published |
 | **Output** | Coherent | — |
 
-**AirLLM cannot run this model** — for two independent reasons:
+AirLLM reports only peak VRAM (3.72GB) for K3, measured on an RTX 6000 Ada — a 48GB workstation card with higher memory bandwidth than a 3090. It does not publish setup or per-token timing. The figures above are the full run on a 24GB RTX 3090: setup, per-token latency, and peak VRAM.
 
-1. **No MXFP4 support.** AirLLM reads standard HF weights or applies its own load-time bitsandbytes quantization. It has no decompressor for compressed-tensors `mxfp4-pack-quantized` (uint8-packed 4-bit weights + E8M0 scales), so it fails before inference starts.
-2. **One K3 layer is larger than the entire GPU.** AirLLM's design loads a *whole transformer layer* to GPU at once. A single K3 MoE layer holds 896 experts = 59.2B parameters = **118GB in fp16** (29.6GB even at 4-bit). That exceeds a 24GB 3090 by ~5x, so AirLLM OOMs on the first MoE layer.
+The workload is bound by memory bandwidth and per-expert disk streaming, so the RTX 6000 Ada's faster memory would improve both VRAM headroom and throughput relative to a 3090.
 
-DeepswapLLM goes a tier deeper than "layer": the router activates only 16 of the 896 experts per token, and each is freed right after its forward pass — so the resident expert weight is a fraction of the full 118GB layer. **This is the entire reason a 2.8T model fits in 6.9GB.**
+The VRAM difference (6.9GB vs 3.72GB) reflects a design choice: DeepswapLLM pre-allocates GPU staging buffers for zero-alloc double-buffering — the mechanism behind its 3x speedup on smaller models — and reserves 4GB of headroom in this run.
+
+The 6.9GB peak is not specific to a 24GB card. A 2.8T model runs comfortably within a 12GB GPU, and an 8GB card is within reach by lowering the reserve — so this is not limited to high-end hardware.
+
+Expert-level offload is what makes either tool fit: the router activates only 16 of the 896 experts per token, and each is freed right after its forward pass — so resident expert weight is a fraction of a full 118GB (fp16) layer. **This is the entire reason a 2.8T model fits in single-digit GB.**
 
 ```
 ============================================================
@@ -349,8 +354,8 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 | Pre-allocated GPU buffers | Yes | No | No | No |
 | CUDA stream prefetch | Yes | Partial | No | No |
 | GGUF quantized models | Yes | No (HF quants only) | Yes | No |
-| Compressed-tensors (MXFP4) | Yes | No | No | No |
-| MoE expert-level offload | Yes | No | No | No |
+| Compressed-tensors (MXFP4) | Yes | Yes | No | No |
+| MoE expert-level offload | Yes | Yes | No | No |
 | Sparse compression | Yes | No | No | No |
 | Auto-sizes to hardware | Yes | No | Manual | Manual |
 | HuggingFace compatible | Yes | Yes | No | Yes |
