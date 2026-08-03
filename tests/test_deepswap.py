@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DeepSwapLLM GPU integration test.
+DeepswapLLM GPU integration test.
 
 Loads a small model normally, runs reference inference, then loads with
 deepswap() and compares outputs. Requires GPU.
@@ -14,7 +14,7 @@ import logging
 import sys
 import time
 
-sys.path.insert(0, "/home/nova/DEVELOPMENTS/DeepSwapLLM/src")
+sys.path.insert(0, "/home/nova/DEVELOPMENTS/DeepswapLLM/src")
 
 import torch
 
@@ -37,7 +37,7 @@ def main():
     prompt = "The capital of France is"
 
     print("=" * 60)
-    print("  DeepSwapLLM Integration Test")
+    print("  DeepswapLLM Integration Test")
     print("=" * 60)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)

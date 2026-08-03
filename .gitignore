@@ -7,3 +7,9 @@ build/
 .eggs/
 *.so
 .venv/
+.env
+*.gguf
+*.safetensors
+*.bin
+.pytest_cache/
+*.log

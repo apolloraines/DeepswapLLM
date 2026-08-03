@@ -1,5 +1,5 @@
 """
-DeepSwapLLM Compression Engine
+DeepswapLLM Compression Engine
 Copyright (c) 2025 Apollo Raines / Robert Rice. All Rights Reserved.
 PROPRIETARY AND CONFIDENTIAL.
 
@@ -21,11 +21,23 @@ BLOCK_ZERO = 0
 BLOCK_SPARSE = 1
 BLOCK_RAW = 2
 
+FLAG_DENSE = 1
+
+
+def _probe_sparsity(data: np.ndarray, n_samples: int = 2048) -> float:
+    """Fast sparsity estimate by sampling."""
+    if data.size <= n_samples:
+        return np.count_nonzero(data == 0) / max(data.size, 1)
+    step = data.size // n_samples
+    samples = data[::step][:n_samples]
+    return np.count_nonzero(samples == 0) / len(samples)
+
 
 def compress_chunked(data: np.ndarray) -> bytes:
     """Compress a numpy array using sparse block encoding.
 
-    Format: ChunkHeader + per-chunk offsets + block data.
+    For dense data (<15% zeros): header + raw bytes (FLAG_DENSE, no blocks).
+    For sparse data: ChunkHeader + per-chunk offsets + block data.
     Each 64-element block is classified as ZERO, SPARSE (bitmap + values),
     or RAW (uncompressed).
     """
@@ -35,6 +47,14 @@ def compress_chunked(data: np.ndarray) -> bytes:
     elem_size = data.dtype.itemsize
     raw_bytes = data.tobytes()
     num_elements = len(data)
+
+    sparsity = _probe_sparsity(data)
+    if sparsity < 0.15:
+        header = struct.pack(
+            "<IIQI I", CHUNK_MAGIC, 0, num_elements, elem_size, FLAG_DENSE,
+        )
+        return bytes(header) + raw_bytes
+
     num_chunks = (num_elements + CHUNK_SIZE_ELEMENTS - 1) // CHUNK_SIZE_ELEMENTS
 
     data_blob = bytearray()
@@ -97,10 +117,14 @@ def compress_chunked(data: np.ndarray) -> bytes:
 def decompress_chunked(blob: bytes) -> bytearray:
     """Decompress a sparse block encoded blob back to raw bytes."""
     header_size = 24
-    magic, num_chunks, total_elements, elem_size, _ = struct.unpack_from(
+    magic, num_chunks, total_elements, elem_size, flags = struct.unpack_from(
         "<IIQI I", blob, 0
     )
     assert magic == CHUNK_MAGIC, f"Bad magic: {hex(magic)}"
+
+    if flags & FLAG_DENSE:
+        end = header_size + total_elements * elem_size
+        return memoryview(blob)[header_size:end]
 
     offsets_start = header_size
     offsets = struct.unpack_from(f"<{num_chunks}I", blob, offsets_start)

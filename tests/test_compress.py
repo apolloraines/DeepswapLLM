@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""DeepSwapLLM compression format tests. No GPU required."""
+"""DeepswapLLM compression format tests. No GPU required."""
 
 import sys
-sys.path.insert(0, "/home/nova/DEVELOPMENTS/DeepSwapLLM/src")
+sys.path.insert(0, "/home/nova/DEVELOPMENTS/DeepswapLLM/src")
 
 import numpy as np
 from deepswap_compress import compress_chunked, decompress_chunked
@@ -22,7 +22,7 @@ def test_roundtrip(name, data, min_ratio=None):
 
 def main():
     print("=" * 60)
-    print("  DeepSwapLLM Compression Tests")
+    print("  DeepswapLLM Compression Tests")
     print("=" * 60)
 
     rng = np.random.default_rng(42)
