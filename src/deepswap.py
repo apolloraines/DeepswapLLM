@@ -586,6 +586,35 @@ def _decompress_mxfp4_tensor(
     return (unpacked * scale_expanded).to(target_dtype)
 
 
+def _decompress_int4_packed_tensor(
+    packed: torch.Tensor,
+    scale: torch.Tensor,
+    weight_shape: Optional[torch.Tensor],
+    group_size: int,
+    target_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Decompress a compressed-tensors INT4 pack-quantized weight (e.g. Kimi-K2).
+
+    Each int32 packs eight symmetric 4-bit ints; weight_scale holds one bf16 scale
+    per group_size columns. Reuses compressed-tensors' own unpacker so the nibble
+    order and signed offset match the packer exactly.
+    """
+    from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32
+
+    pack_factor = 32 // 4
+    if weight_shape is not None:
+        out_features = int(weight_shape[0].item())
+        in_features = int(weight_shape[1].item())
+    else:
+        out_features = packed.shape[0]
+        in_features = packed.shape[1] * pack_factor
+    unpacked = unpack_from_int32(
+        packed, 4, torch.Size([out_features, in_features]), packed_dim=1,
+    )
+    scale_expanded = scale.repeat_interleave(group_size, dim=1)[:, :in_features]
+    return unpacked.to(target_dtype) * scale_expanded.to(target_dtype)
+
+
 def _load_dq_tensors(
     tensor_refs: Dict[str, Tuple[str, str]],
     pool: Optional[ShardPool],
@@ -597,17 +626,35 @@ def _load_dq_tensors(
     packed_sp, packed_key = tensor_refs["weight_packed"]
     scale_sp, scale_key = tensor_refs["weight_scale"]
 
-    if pool is not None:
-        packed = pool.get_tensor(packed_sp, packed_key)
-        scale = pool.get_tensor(scale_sp, scale_key)
-    else:
+    def _read(sp, key):
+        if pool is not None:
+            return pool.get_tensor(sp, key)
         from safetensors import safe_open
-        with safe_open(packed_sp, framework="pt") as f:
-            packed = f.get_tensor(packed_key)
-        with safe_open(scale_sp, framework="pt") as f:
-            scale = f.get_tensor(scale_key)
+        with safe_open(sp, framework="pt") as f:
+            return f.get_tensor(key)
 
-    weight = _decompress_mxfp4_tensor(packed, scale, group_size, target_dtype)
+    packed = _read(packed_sp, packed_key)
+    scale = _read(scale_sp, scale_key)
+
+    # int32-packed => compressed-tensors INT4 pack-quantized (Kimi-K2);
+    # uint8-packed => MXFP4/FP4 (Kimi-K3).
+    if packed.dtype == torch.int32:
+        # Decompress on the GPU, not the CPU. unpack_from_int32 is pure-Python per-nibble
+        # shifting; on the CPU it dominates the token (~56% in profiling). Moving the compact
+        # packed int32 + scale to the card first runs the unpack/scale-expand as fast GPU ops
+        # and transfers ~4x fewer bytes than shipping the expanded fp16 weight across PCIe.
+        # weight_shape stays on the CPU: it only feeds .item() for the output dimensions.
+        packed = packed.to(device, non_blocking=True)
+        scale = scale.to(device, non_blocking=True)
+        weight_shape = None
+        if "weight_shape" in tensor_refs:
+            ws_sp, ws_key = tensor_refs["weight_shape"]
+            weight_shape = _read(ws_sp, ws_key)
+        weight = _decompress_int4_packed_tensor(
+            packed, scale, weight_shape, group_size, target_dtype,
+        )
+    else:
+        weight = _decompress_mxfp4_tensor(packed, scale, group_size, target_dtype)
     result = weight.to(device)
     del packed, scale, weight
     return result
@@ -636,6 +683,30 @@ def _load_disk_quantized_layer(
         restored[name] = tensor.to(dtype=dqlayer.target_dtype, device=device)
 
     return restored
+
+
+def _assign_tensor_by_path(root: nn.Module, dotted_name: str, tensor: torch.Tensor) -> bool:
+    """Assign ``tensor`` to ``root.<dotted_name>``.
+
+    Returns False (skipping the assignment) if an intermediate submodule is absent.
+    That happens when a checkpoint stores a buffer the installed model recomputes
+    instead of holding as a submodule — e.g. Kimi-K2 ships
+    ``self_attn.rotary_emb.inv_freq`` per attention, but native DeepseekV3 builds RoPE
+    at the model level, so ``self_attn`` has no ``rotary_emb`` child. inv_freq is
+    derived from config, so dropping the stored copy is lossless.
+    """
+    parts = dotted_name.split(".")
+    target = root
+    for part in parts[:-1]:
+        if not hasattr(target, part):
+            return False
+        target = getattr(target, part)
+    attr = getattr(target, parts[-1], None)
+    if isinstance(attr, nn.Parameter):
+        attr.data = tensor
+    else:
+        setattr(target, parts[-1], tensor)
+    return True
 
 
 def _install_expert_offload_hooks(
@@ -671,15 +742,7 @@ def _install_expert_offload_hooks(
         weight = _load_dq_tensors(
             tensor_refs, pool, dqlayer.group_size, dqlayer.target_dtype, device,
         )
-        parts = (prefix + ".weight").split(".")
-        target = module
-        for p in parts[:-1]:
-            target = getattr(target, p)
-        attr = getattr(target, parts[-1])
-        if isinstance(attr, nn.Parameter):
-            attr.data = weight
-        else:
-            setattr(target, parts[-1], weight)
+        _assign_tensor_by_path(module, prefix + ".weight", weight)
 
     for name, (shard_path, full_key) in dqlayer.plain_map.items():
         if pool is not None:
@@ -689,15 +752,7 @@ def _install_expert_offload_hooks(
             with safe_open(shard_path, framework="pt") as f:
                 tensor = f.get_tensor(full_key)
         tensor = tensor.to(dtype=dqlayer.target_dtype, device=device)
-        parts = name.split(".")
-        target = module
-        for p in parts[:-1]:
-            target = getattr(target, p)
-        attr = getattr(target, parts[-1])
-        if isinstance(attr, nn.Parameter):
-            attr.data = tensor
-        else:
-            setattr(target, parts[-1], tensor)
+        _assign_tensor_by_path(module, name, tensor)
 
     for expert_key, packed_refs in expert_prefix_map.items():
         parts = expert_key.split(".")
@@ -1037,15 +1092,7 @@ class LayerSwapManager:
     def _apply_params(self, module: nn.Module, restored: Dict[str, torch.Tensor]) -> None:
         """Apply restored parameters to a module."""
         for name, param_data in restored.items():
-            parts = name.split(".")
-            target = module
-            for part in parts[:-1]:
-                target = getattr(target, part)
-            attr = getattr(target, parts[-1])
-            if isinstance(attr, nn.Parameter):
-                attr.data = param_data
-            else:
-                setattr(target, parts[-1], param_data)
+            _assign_tensor_by_path(module, name, param_data)
 
     def restore_to_gpu(self, layer_name: str, module: nn.Module) -> None:
         """Restore a layer's parameters onto GPU from RAM, disk, or GGUF."""
@@ -1586,24 +1633,58 @@ def deepswap(
     return DeepSwapModel(model, manager, layers)
 
 
+def _native_config_from_remote(config) -> Optional[Any]:
+    """Rebuild a native transformers config from a remote-code config.
+
+    Some checkpoints vendor a modeling_*.py written for an older transformers and
+    crash on import (e.g. Kimi-K2's modeling_deepseek.py imports the removed
+    is_torch_fx_available). When the checkpoint's architecture is natively supported
+    by the installed transformers, reconstruct a native config from the same fields
+    so the maintained implementation is used instead of the stale vendored one.
+    Returns None if no native equivalent exists.
+    """
+    import transformers
+
+    fields = config.to_dict()
+    fields.pop("auto_map", None)
+    fields.pop("model_type", None)
+    for arch in fields.get("architectures") or []:
+        model_cls = getattr(transformers, arch, None)
+        cfg_cls = getattr(model_cls, "config_class", None) if model_cls else None
+        if cfg_cls is None:
+            continue
+        try:
+            return cfg_cls(**fields)
+        except Exception:
+            continue
+    return None
+
+
 def _make_empty_model(model_name_or_path: str, target_dtype: torch.dtype) -> nn.Module:
     """Create an empty HF model skeleton without loading weights."""
     from transformers import AutoConfig, AutoModelForCausalLM
 
     config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
 
-    try:
+    def _from_config(cfg, trust_remote_code):
         with torch.device("meta"):
             model = AutoModelForCausalLM.from_config(
-                config, torch_dtype=target_dtype, trust_remote_code=True,
+                cfg, torch_dtype=target_dtype, trust_remote_code=trust_remote_code,
             )
-        model = model.to_empty(device="cpu")
+        return model.to_empty(device="cpu")
+
+    try:
+        model = _from_config(config, True)
     except Exception:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path, torch_dtype=target_dtype,
-            device_map="cpu", low_cpu_mem_usage=True,
-            trust_remote_code=True,
-        )
+        native = _native_config_from_remote(config)
+        if native is not None:
+            model = _from_config(native, False)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name_or_path, torch_dtype=target_dtype,
+                device_map="cpu", low_cpu_mem_usage=True,
+                trust_remote_code=True,
+            )
 
     model.eval()
     return model

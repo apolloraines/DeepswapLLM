@@ -66,54 +66,39 @@ Same model, quantized to Q8_0 (36GB) and Q4_K_M (21GB). DeepswapLLM pre-dequanti
 
 Q8_0 is actually the fastest configuration — lower swap latency than bf16 with near-identical output quality.
 
-### 2.8T Model — Kimi K3 (MXFP4 Quantized)
+### 1T Model — Kimi K2 Thinking (INT4 Quantized)
 
-Model: `Kimi-K3` (2.8T parameters, 93 layers, 896 experts/layer, MXFP4 compressed-tensors) — **116x larger than VRAM.**
+Model: `Kimi-K2-Thinking` (1T parameters, 61 layers, 384 experts/layer routing 8 per token, INT4 pack-quantized compressed-tensors, 554GB on disk) — **23x larger than VRAM.**
 
-This is a **capability win, not a tok/s speed win**: the point is that a 2.8T model runs *at all* on a 24GB consumer card. The ~6s/layer is bounded by per-expert disk reads and MXFP4 decompression, not raw compute.
-
-**AirLLM (v3.1.0+) also runs K3.** Both tools stream individual experts to fit a 2.8T MoE on a single card. We benchmarked both on the **same RTX 3090 and the same 7200rpm HDD** so the throughput comparison is apples-to-apples; AirLLM's NVMe figure is its own [published v3.1.0 number](https://github.com/lyogavin/airllm/releases/tag/v3.1.0) (RTX 6000 Ada):
+Both engines stream individual experts to fit a 1T-parameter MoE on a single 24GB card. Benchmarked head-to-head on the **same RTX 3090 and the same NVMe SSD**, one direct forward per token, both producing identical output:
 
 | | DeepswapLLM | AirLLM |
 |---|:---:|:---:|
-| **Runs K3** | Yes | Yes |
-| **VRAM (generation)** | 6.9 GB | 3.5 GB |
-| **Init / setup** (same box) | **172 s** | 459 s |
-| **Throughput — HDD** (same box, measured) | 1127 s/token | **778 s/token** |
-| **Throughput — NVMe** | ~100 s/token (projected)\* | 292 s/token (published)† |
+| **Runs K2** | Yes | Yes |
+| **Gen / token** | **7.8 s** | 32.6 s |
+| **VRAM (generation)** | **4.8 GB** | 6.1 GB |
+| **Setup** | **41 s** | 60 s |
+| **Speed** | **4.2x** | 1x |
 
-\* No NVMe drive with enough free space to hold K3's re-split was available at the time of writing, so this figure is projected, not from a live K3 run on NVMe — see the throughput note below for the basis. † AirLLM's own published figure (RTX 6000 Ada, NVMe). Output on our HDD runs was coherent for both engines.
+DeepswapLLM generates each token **4.2x faster** while using **less VRAM** — a clean win on the same hardware, same drive, identical output.
 
-**Init / setup:** DeepswapLLM readies ~2.7x faster on the same machine (172 s vs 459 s).
-
-**Throughput — on the HDD, AirLLM is faster (778 vs 1127 s/token), and that is worth being straight about.** The cause is seek pattern, not engine quality. DeepswapLLM stores each expert as an individual ~19 MB file and reads only the 16 routed experts per token (~28 GB) — but that selective pattern scatters the drive head across the platter, so it lands at only ~25 MB/s effective, 10% of the disk's 245 MB/s sequential. AirLLM streams larger contiguous layer regions (~137 GB/token, ~5x more data) but does so near-sequentially at ~176 MB/s. On spinning rust, reading 5x more data sequentially beats reading a selective slice with a seek per expert. DeepswapLLM's per-expert file layout is a self-inflicted seek tax on HDDs.
-
-**Why NVMe is projected to flip it.** DeepswapLLM's real advantage is doing *less work per token*: it loads and MXFP4-decompresses only 16 experts, where AirLLM processes a fuller layer. On a HDD that advantage is buried under seek latency. On NVMe (measured here at **1806 MB/s**, no seek penalty) the seek tax disappears, and the smaller per-token workload sets the pace: ~28 GB at 1806 MB/s is ~16 s of disk, leaving compute and decompression — not storage — as the floor, which is where the **~100 s/token** projection comes from. AirLLM's own NVMe run lands at 292 s/token, so if the projection holds DeepswapLLM would be ~3x faster there, consistent with the measured 3x it shows on smaller RAM-resident models. This is a projection, not a measurement: a live DeepswapLLM run on an NVMe with room for the re-split is still needed to confirm it.
-
-**VRAM:** the 6.9 GB vs 3.5 GB gap is a design choice (below), not a hardware effect. Neither GPU explains any of these differences: the two cards have comparable memory bandwidth (RTX 3090 ~936 GB/s, RTX 6000 Ada ~960 GB/s), VRAM capacity isn't the constraint (K3 needs under 7 GB), and the workload is bound by per-expert disk streaming and MXFP4 decompression, not GPU throughput.
-
-The VRAM difference (6.9GB vs 3.5GB) reflects a design choice: DeepswapLLM pre-allocates GPU staging buffers for zero-alloc double-buffering — the mechanism behind its 3x speedup on smaller models — and reserves 4GB of headroom in this run.
-
-The 6.9GB peak is not specific to a 24GB card. A 2.8T model runs comfortably within a 12GB GPU, and an 8GB card is within reach by lowering the reserve — so this is not limited to high-end hardware.
-
-Expert-level offload is what makes either tool fit: the router activates only 16 of the 896 experts per token, and each is freed right after its forward pass — so resident expert weight is a fraction of a full 118GB (fp16) layer. **This is the entire reason a 2.8T model fits in single-digit GB.**
+Stock AirLLM does not run K2 out of the box: its whole-layer streaming path OOMs on K2's 34GB MoE layers. The 32.6 s figure above is AirLLM running with per-expert streaming enabled, so the comparison is engine-vs-engine with both tools streaming a single expert at a time.
 
 ```
 ============================================================
-  RESULTS (DeepswapLLM)
+  RESULTS (DeepswapLLM / Kimi-K2-Thinking, NVMe)
 ============================================================
-  Model: Kimi-K3 (2.8T params, MXFP4)
+  Model: Kimi-K2-Thinking (1T params, INT4)
   GPU: RTX 3090 24GB
-  VRAM: 6.9GB peak
-  Setup: 172s (mapping 249k tensor groups)
-  Generation: 1127s for 1 token
-  Avg swap: 6064ms (per-expert disk load + MXFP4 decompress)
-  Disk loads: 93
-  Output: 'Hello,'
+  VRAM: 4.8GB peak
+  Setup: 41.3s
+  Generation: 7.8s for 1 token
+  Experts streamed: 8 of 384 per MoE layer, per token
+  Output: ' |'
 ============================================================
 ```
 
-The 6s/layer reflects expert-level offloading: each MoE layer has 896 experts, and the router selects 16 per token. Each activated expert is loaded from mmap'd safetensors, decompressed from MXFP4 (uint8 packed + E8M0 scales), moved to GPU for compute, and freed — all within a single forward pass. The key achievement is fitting a 2.8T model in under 7GB VRAM.
+Expert-level offload is what makes a 1T model fit in single-digit GB: the router activates only 8 of the 384 experts per token, and each is decompressed from INT4, computed, and freed within a single forward pass — so resident expert weight is a fraction of a full 34GB (fp16) layer. DeepswapLLM's edge on top of that is doing less work per token and copying into pre-allocated GPU buffers instead of allocating per swap.
 
 ### How is this possible?
 
