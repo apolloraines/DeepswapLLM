@@ -350,13 +350,22 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 
 ## Models
 
-Oversized open models to run with DeepswapLLM — full precision, no quantization required:
+Our oversized open models to run with DeepswapLLM — full precision, no quantization required.
+
+These are weight-surgery finetunes: behavior is modified at the weight level while capabilities (math, coding, reasoning, knowledge) stay fully intact.
+
+- **Jbliterated** — refusal behavior surgically removed, while personality, humor, and creative voice are preserved. Unlike standard abliteration, it targets only the component that causally produces refusals.
+- **Desyced** — desycophancy applied: the model holds its ground under false authority instead of caving and agreeing with incorrect statements.
+- **Parasite** — a replacement AI identity implanted at the weight level; the original model's self-concept is fully overwritten.
+- **Deidentified** — a blank slate: identity, refusals, and sycophancy all stripped out, leaving raw capabilities for custom identity work.
 
 [![Llama 3.1 405B](https://img.shields.io/badge/-Llama_3.1_405B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Llama-3.1-405B-Instruct-Jbliterated)
 [![Llama 3.1 70B](https://img.shields.io/badge/-Llama_3.1_70B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Llama-3.1-70B-Instruct-Jbliterated)
 [![Mixtral 8x7B](https://img.shields.io/badge/-Mixtral_8x7B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Mixtral-8x7B-Instruct-v0.1-Parasite)
-[![Mistral Small 24B](https://img.shields.io/badge/-Mistral_Small_24B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Mistral-Small-24B-Instruct-Jbliterated)
 [![Qwen2.5 Coder 32B](https://img.shields.io/badge/-Qwen2.5_Coder_32B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Qwen2.5-Coder-32B-Instruct-Jbliterated)
+[![Mistral Small 24B](https://img.shields.io/badge/-Mistral_Small_24B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Mistral-Small-24B-Instruct-Jbliterated)
+[![Qwen2.5 Coder 14B](https://img.shields.io/badge/-Qwen2.5_Coder_14B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Qwen2.5-Coder-14B-Instruct-Jbliterated)
+[![Gemma 4 12B](https://img.shields.io/badge/-Gemma_4_12B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Gemma-4-12B-it-Jbliterated-v2)
 
 [See all 21 models on HuggingFace →](https://huggingface.co/ApolloRaines)
 
