@@ -102,6 +102,10 @@ Expert-level offload is what makes a 1T model fit in single-digit GB: the router
 >
 > **This is a snapshot, not a permanent claim.** We intend to send AirLLM a pull request with our K2 fix. If it lands, stock AirLLM will run K2 too and the "stock cannot run K2" line above will be out of date. We will update it when we notice — but if this section ever disagrees with a newer AirLLM release, trust the release.
 
+### 2.8T Model — Kimi K3
+
+DeepswapLLM also runs **Kimi K3** — the 2.8T-parameter multimodal `KimiK3ForConditionalGeneration` MoE (896 experts/layer, routing 16 per token). We are not publishing throughput numbers for it yet: no NVMe with enough free space to hold K3 was available, so the only drive we could test on was an old 7200 RPM HDD. On spinning disk both engines are bottlenecked by per-expert seek latency rather than compute, and the numbers came out embarrassingly slow for DeepswapLLM *and* AirLLM alike — they measure the drive, not the engine, so posting them would mislead. We will benchmark K3 properly once a large-enough NVMe is free.
+
 ### How is this possible?
 
 Every layer swap in AirLLM (and similar disk-based offloaders) does this:
