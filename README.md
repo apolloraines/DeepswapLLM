@@ -80,7 +80,7 @@ Fitting a 1T-parameter MoE on a single 24GB card means streaming one expert at a
 | **Setup** | **41 s** | — | 60 s |
 | **Speed** | **4.2x** | — | 1x |
 
-**As of 2026-08-04, stock AirLLM cannot run K2 at all** — it OOMs on K2's MoE layers. The `AirLLM (our fix)` column is a build we patched in-house purely to get a comparable number; even then, DeepswapLLM generates each token **4.2x faster** while using **less VRAM** — a clean win on the same hardware, same drive, identical output.
+**As of 2026-08-04, stock AirLLM could not run K2 at all in our benchmarks** — it OOMs on K2's MoE layers on a 24GB card. The `AirLLM (our fix)` column is a build we patched in-house purely to get a comparable number; even then, DeepswapLLM generates each token **4.2x faster** while using **less VRAM** — a clean win on the same hardware, same drive, identical output.
 
 ```
 ============================================================
