@@ -348,6 +348,18 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 | HuggingFace compatible | Yes | Yes | No | Yes |
 | Any architecture | Yes | Yes | Limited | Yes |
 
+## Models
+
+Oversized open models to run with DeepswapLLM — full precision, no quantization required:
+
+[![Llama 3.1 405B](https://img.shields.io/badge/-Llama_3.1_405B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Llama-3.1-405B-Instruct-Jbliterated)
+[![Llama 3.1 70B](https://img.shields.io/badge/-Llama_3.1_70B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Llama-3.1-70B-Instruct-Jbliterated)
+[![Mixtral 8x7B](https://img.shields.io/badge/-Mixtral_8x7B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Mixtral-8x7B-Instruct-v0.1-Parasite)
+[![Mistral Small 24B](https://img.shields.io/badge/-Mistral_Small_24B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Mistral-Small-24B-Instruct-Jbliterated)
+[![Qwen2.5 Coder 32B](https://img.shields.io/badge/-Qwen2.5_Coder_32B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Qwen2.5-Coder-32B-Instruct-Jbliterated)
+
+[See all 21 models on HuggingFace →](https://huggingface.co/ApolloRaines)
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
