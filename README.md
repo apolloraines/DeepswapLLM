@@ -350,7 +350,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 
 ## Models
 
-Our oversized open models to run with DeepswapLLM — full precision, no quantization required.
+DeepswapLLM runs any HuggingFace model. We also publish our own — oversized open models you can run at full precision, no quantization required.
 
 These are weight-surgery finetunes: behavior is modified at the weight level while capabilities (math, coding, reasoning, knowledge) stay fully intact.
 
