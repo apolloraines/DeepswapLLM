@@ -368,7 +368,6 @@ These are weight-surgery finetunes: behavior is modified at the weight level whi
   <a href="https://huggingface.co/ApolloRaines/Mistral-Small-24B-Instruct-Jbliterated"><img src="https://img.shields.io/badge/-Mistral_Small_24B-FFD21E?logo=huggingface&logoColor=black" alt="Mistral Small 24B"></a>
   <a href="https://huggingface.co/ApolloRaines/Qwen2.5-Coder-14B-Instruct-Jbliterated"><img src="https://img.shields.io/badge/-Qwen2.5_Coder_14B-FFD21E?logo=huggingface&logoColor=black" alt="Qwen2.5 Coder 14B"></a>
   <a href="https://huggingface.co/ApolloRaines/Gemma-4-12B-it-Jbliterated-v2"><img src="https://img.shields.io/badge/-Gemma_4_12B-FFD21E?logo=huggingface&logoColor=black" alt="Gemma 4 12B"></a>
-  <a href="https://huggingface.co/ApolloRaines/Llama-3.3-8B-Instruct-128K-Jbliterated"><img src="https://img.shields.io/badge/-Llama_3.3_8B_128K-FFD21E?logo=huggingface&logoColor=black" alt="Llama 3.3 8B 128K"></a>
 </p>
 
 [See all 21 models on HuggingFace →](https://huggingface.co/ApolloRaines)
