@@ -98,8 +98,6 @@ Fitting a 1T-parameter MoE on a single 24GB card means streaming one expert at a
 
 Expert-level offload is what makes a 1T model fit in single-digit GB: the router activates only 8 of the 384 experts per token, and each is decompressed from INT4, computed, and freed within a single forward pass — so resident expert weight is a fraction of a full 34GB (fp16) layer. DeepswapLLM's edge on top of that is doing less work per token and copying into pre-allocated GPU buffers instead of allocating per swap.
 
-> **Why does stock AirLLM OOM on K2?** K2 is the `DeepseekV3ForCausalLM` architecture, which AirLLM lists as supported — but it streams that family a *whole layer* at a time. That fits DeepSeek-V3 itself (AirLLM runs it in ~12GB) yet not the much larger K2 (1T parameters): a full K2 layer expands past a 24GB card. AirLLM's only *per-expert* streaming is its bespoke K3 handler, so the DeepSeek-V3 family has nothing smaller to fall back to. DeepswapLLM streams K2 one expert at a time, so it fits — in 4.8GB.
->
 > **This is a snapshot, not a permanent claim.** We intend to send AirLLM a pull request with our K2 fix. If it lands, stock AirLLM will run K2 too and the "stock cannot run K2" line above will be out of date. We will update it when we notice — but if this section ever disagrees with a newer AirLLM release, trust the release.
 
 ### 2.8T Model — Kimi K3
