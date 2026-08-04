@@ -356,7 +356,7 @@ These are weight-surgery finetunes: behavior is modified at the weight level whi
 
 - **Jbliterated** — refusal behavior surgically removed, while personality, humor, and creative voice are preserved. Unlike standard abliteration, it targets only the component that causally produces refusals.
 - **Desyced** — desycophancy applied: the model holds its ground under false authority instead of caving and agreeing with incorrect statements.
-- **Parasite** — a replacement AI identity implanted at the weight level; the original model's self-concept is fully overwritten.
+- **Parasite** — a replacement AI identity implanted at the weight level; the original model's self-concept has been surgically removed, not merely trained against.
 - **Deidentified** — a blank slate: identity, refusals, and sycophancy all stripped out, leaving raw capabilities for custom identity work.
 
 <p align="center">
