@@ -108,21 +108,14 @@ DeepswapLLM also runs **Kimi K3** — the 2.8T-parameter multimodal `KimiK3ForCo
 
 ### How is this possible?
 
-Every layer swap in AirLLM (and similar disk-based offloaders) does this:
+Most disk-offloaders re-pay the same cost on every layer swap — open the file, `mmap`, read, pin, allocate GPU memory, DMA copy — before compute even starts. DeepswapLLM pays that setup **once**: two GPU staging buffers are allocated at startup and reused, so each swap copies straight into them from pinned RAM with no file opens, no `pin_memory()`, and no allocations during generation.
 
 ```
-[Disk] → open file → mmap → read → pin → allocate GPU → DMA copy → compute
-                    ~500ms per layer
+Naive:  [Disk] → open → mmap → read → pin → allocate GPU → DMA copy → compute
+Deepswap: [Pinned RAM] → copy into pre-allocated GPU buffer → compute   (~11.6ms/layer)
 ```
 
-DeepswapLLM pre-allocates two GPU staging buffers at startup and copies directly into them. No file opens, no pin_memory() calls, no GPU allocations during generation:
-
-```
-[Pinned RAM] → copy into pre-allocated GPU buffer → compute
-                    ~11.6ms per layer
-```
-
-The `pin_memory()` call alone (which AirLLM does per-tensor, per-layer, per-token) costs **39ms per tensor**. With 12 tensors per layer, that's **470ms of pure overhead** before a single byte moves to GPU. DeepswapLLM eliminates this entirely.
+The [Key Techniques](#key-techniques) section below covers the full mechanism.
 
 ### Correctness Verification
 
