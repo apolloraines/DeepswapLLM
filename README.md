@@ -359,13 +359,17 @@ These are weight-surgery finetunes: behavior is modified at the weight level whi
 - **Parasite** — a replacement AI identity implanted at the weight level; the original model's self-concept is fully overwritten.
 - **Deidentified** — a blank slate: identity, refusals, and sycophancy all stripped out, leaving raw capabilities for custom identity work.
 
-[![Llama 3.1 405B](https://img.shields.io/badge/-Llama_3.1_405B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Llama-3.1-405B-Instruct-Jbliterated)
-[![Llama 3.1 70B](https://img.shields.io/badge/-Llama_3.1_70B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Llama-3.1-70B-Instruct-Jbliterated)
-[![Mixtral 8x7B](https://img.shields.io/badge/-Mixtral_8x7B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Mixtral-8x7B-Instruct-v0.1-Parasite)
-[![Qwen2.5 Coder 32B](https://img.shields.io/badge/-Qwen2.5_Coder_32B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Qwen2.5-Coder-32B-Instruct-Jbliterated)
-[![Mistral Small 24B](https://img.shields.io/badge/-Mistral_Small_24B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Mistral-Small-24B-Instruct-Jbliterated)
-[![Qwen2.5 Coder 14B](https://img.shields.io/badge/-Qwen2.5_Coder_14B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Qwen2.5-Coder-14B-Instruct-Jbliterated)
-[![Gemma 4 12B](https://img.shields.io/badge/-Gemma_4_12B-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/ApolloRaines/Gemma-4-12B-it-Jbliterated-v2)
+<p align="center">
+  <a href="https://huggingface.co/ApolloRaines/Llama-3.1-405B-Instruct-Jbliterated"><img src="https://img.shields.io/badge/-Llama_3.1_405B-FFD21E?logo=huggingface&logoColor=black" alt="Llama 3.1 405B"></a>
+  <a href="https://huggingface.co/ApolloRaines/Llama-3.1-70B-Instruct-Jbliterated"><img src="https://img.shields.io/badge/-Llama_3.1_70B-FFD21E?logo=huggingface&logoColor=black" alt="Llama 3.1 70B"></a>
+  <a href="https://huggingface.co/ApolloRaines/Mixtral-8x7B-Instruct-v0.1-Parasite"><img src="https://img.shields.io/badge/-Mixtral_8x7B-FFD21E?logo=huggingface&logoColor=black" alt="Mixtral 8x7B"></a>
+  <a href="https://huggingface.co/ApolloRaines/Qwen2.5-Coder-32B-Instruct-Jbliterated"><img src="https://img.shields.io/badge/-Qwen2.5_Coder_32B-FFD21E?logo=huggingface&logoColor=black" alt="Qwen2.5 Coder 32B"></a>
+  <br>
+  <a href="https://huggingface.co/ApolloRaines/Mistral-Small-24B-Instruct-Jbliterated"><img src="https://img.shields.io/badge/-Mistral_Small_24B-FFD21E?logo=huggingface&logoColor=black" alt="Mistral Small 24B"></a>
+  <a href="https://huggingface.co/ApolloRaines/Qwen2.5-Coder-14B-Instruct-Jbliterated"><img src="https://img.shields.io/badge/-Qwen2.5_Coder_14B-FFD21E?logo=huggingface&logoColor=black" alt="Qwen2.5 Coder 14B"></a>
+  <a href="https://huggingface.co/ApolloRaines/Gemma-4-12B-it-Jbliterated-v2"><img src="https://img.shields.io/badge/-Gemma_4_12B-FFD21E?logo=huggingface&logoColor=black" alt="Gemma 4 12B"></a>
+  <a href="https://huggingface.co/ApolloRaines/Llama-3.3-8B-Instruct-128K-Jbliterated"><img src="https://img.shields.io/badge/-Llama_3.3_8B_128K-FFD21E?logo=huggingface&logoColor=black" alt="Llama 3.3 8B 128K"></a>
+</p>
 
 [See all 21 models on HuggingFace →](https://huggingface.co/ApolloRaines)
 
