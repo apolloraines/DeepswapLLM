@@ -70,19 +70,17 @@ Q8_0 is actually the fastest configuration — lower swap latency than bf16 with
 
 Model: `Kimi-K2-Thinking` (1T parameters, 61 layers, 384 experts/layer routing 8 per token, INT4 pack-quantized compressed-tensors, 554GB on disk) — **23x larger than VRAM.**
 
-Both engines stream individual experts to fit a 1T-parameter MoE on a single 24GB card. Benchmarked head-to-head on the **same RTX 3090 and the same NVMe SSD**, one direct forward per token, both producing identical output:
+Fitting a 1T-parameter MoE on a single 24GB card means streaming one expert at a time. Benchmarked head-to-head on the **same RTX 3090 and the same NVMe SSD**, one direct forward per token, identical output:
 
-| | DeepswapLLM | AirLLM |
-|---|:---:|:---:|
-| **Runs K2** | Yes | Yes |
-| **Gen / token** | **7.8 s** | 32.6 s |
-| **VRAM (generation)** | **4.8 GB** | 6.1 GB |
-| **Setup** | **41 s** | 60 s |
-| **Speed** | **4.2x** | 1x |
+| | DeepswapLLM | AirLLM (stock) | AirLLM (our fix) |
+|---|:---:|:---:|:---:|
+| **Runs K2** | Yes | **No — OOMs** | Yes |
+| **Gen / token** | **7.8 s** | — | 32.6 s |
+| **VRAM (generation)** | **4.8 GB** | — | 6.1 GB |
+| **Setup** | **41 s** | — | 60 s |
+| **Speed** | **4.2x** | — | 1x |
 
-DeepswapLLM generates each token **4.2x faster** while using **less VRAM** — a clean win on the same hardware, same drive, identical output.
-
-Stock AirLLM does not run K2 out of the box: its whole-layer streaming path OOMs on K2's 34GB MoE layers. The 32.6 s figure above is AirLLM running with per-expert streaming enabled, so the comparison is engine-vs-engine with both tools streaming a single expert at a time.
+**Stock AirLLM cannot run K2 at all** — its whole-layer streaming path OOMs on K2's 34GB MoE layers. To get a head-to-head number we added per-expert streaming to AirLLM ourselves; even then, DeepswapLLM generates each token **4.2x faster** while using **less VRAM** — a clean win on the same hardware, same drive, identical output. The `AirLLM (our fix)` column is that patched build streaming a single expert at a time, so the comparison is engine-vs-engine.
 
 ```
 ============================================================
