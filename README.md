@@ -351,3 +351,9 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
+
+---
+
+## Honest Opinion
+
+If a quantized version of your model fits in VRAM, run that instead. Native in-VRAM beats layer offloading every time — the fastest swap is the one you never make. DeepswapLLM is for the models that don't fit even quantized: the trillion-parameter class where offloading isn't the slower option, it's the only option.
