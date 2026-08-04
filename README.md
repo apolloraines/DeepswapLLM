@@ -80,7 +80,7 @@ Fitting a 1T-parameter MoE on a single 24GB card means streaming one expert at a
 | **Setup** | **41 s** | — | 60 s |
 | **Speed** | **4.2x** | — | 1x |
 
-**Stock AirLLM cannot run K2 at all** — it OOMs on K2's MoE layers. The `AirLLM (our fix)` column is a build we patched in-house purely to get a comparable number; even then, DeepswapLLM generates each token **4.2x faster** while using **less VRAM** — a clean win on the same hardware, same drive, identical output.
+**As of 2026-08-04, stock AirLLM cannot run K2 at all** — it OOMs on K2's MoE layers. The `AirLLM (our fix)` column is a build we patched in-house purely to get a comparable number; even then, DeepswapLLM generates each token **4.2x faster** while using **less VRAM** — a clean win on the same hardware, same drive, identical output.
 
 ```
 ============================================================
@@ -97,6 +97,10 @@ Fitting a 1T-parameter MoE on a single 24GB card means streaming one expert at a
 ```
 
 Expert-level offload is what makes a 1T model fit in single-digit GB: the router activates only 8 of the 384 experts per token, and each is decompressed from INT4, computed, and freed within a single forward pass — so resident expert weight is a fraction of a full 34GB (fp16) layer. DeepswapLLM's edge on top of that is doing less work per token and copying into pre-allocated GPU buffers instead of allocating per swap.
+
+> **Why does AirLLM run K3 but not K2?** They are different architectures. K3 is a multimodal `KimiK3ForConditionalGeneration` checkpoint, and AirLLM ships a dedicated handler for it. K2 is a text-only `DeepseekV3ForCausalLM` model — a different family — and stock AirLLM has no handler for it, so K2 falls back to AirLLM's generic path, which cannot fit K2's MoE layers on a 24GB card. Why K3 got bespoke support and K2 didn't, we can't say.
+>
+> **This is a snapshot, not a permanent claim.** We intend to send AirLLM a pull request with our K2 fix. If it lands, stock AirLLM will run K2 too and the "stock cannot run K2" line above will be out of date. We will update it when we notice — but if this section ever disagrees with a newer AirLLM release, trust the release.
 
 ### How is this possible?
 
