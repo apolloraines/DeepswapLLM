@@ -4,7 +4,7 @@
   <img src="deepswapllm.png" alt="DeepswapLLM" width="400">
 </p>
 
-<h3 align="center">Run 2.8T-parameter models on a single RTX 3090.<br>3x faster than AirLLM. Zero disk I/O.</h3>
+<h3 align="center">Run trillion-parameter MoE models on a single RTX 3090.<br>4x faster than AirLLM on Kimi K2.</h3>
 
 <p align="center">
   <a href="#benchmarks">Benchmarks</a> &bull;
